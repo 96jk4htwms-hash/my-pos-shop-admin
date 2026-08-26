@@ -7070,7 +7070,13 @@
             }
 
             const firstSheet = workbook.Sheets[workbook.SheetNames[0]];
-            const json = XLSX.utils.sheet_to_json(firstSheet, { header: 1 });
+            // raw:false — return each cell's displayed/formatted text (what a person
+            // sees in Excel), not the underlying numeric value. Without this, a
+            // barcode/SKU column stored as a zero-padded Number (very common in retail
+            // export templates, e.g. format "0000000000000") loses its leading zero
+            // the moment it's read as a number and later .toString()'d, silently
+            // corrupting the barcode and breaking matching against existing products.
+            const json = XLSX.utils.sheet_to_json(firstSheet, { header: 1, raw: false, defval: '' });
 
             if (json.length < 2) return showAlert("ไฟล์ไม่มีข้อมูล", "ไม่พบข้อมูลสำหรับประมวลผลภายในตารางของไฟล์นี้", true);
             
@@ -7424,7 +7430,7 @@
 
           const img = item.imageUrl
             ? `<div class="flex flex-col items-center gap-1">
-                 <img src="${escapeHTML(item.imageUrl)}" class="import-img-thumb" onload="this.classList.remove('import-img-bad'); this.nextElementSibling.textContent='✅ รูปเปิดได้'" onerror="this.classList.add('import-img-bad'); this.nextElementSibling.textContent='❌ เปิดรูปไม่ได้'" referrerpolicy="no-referrer">
+                 <img src="${escapeHTML(item.imageUrl)}" class="import-img-thumb" onload="this.classList.remove('import-img-bad'); if(this.nextElementSibling) this.nextElementSibling.textContent='✅ รูปเปิดได้'" onerror="this.classList.add('import-img-bad'); if(this.nextElementSibling) this.nextElementSibling.textContent='❌ เปิดรูปไม่ได้'" referrerpolicy="no-referrer">
                  <span class="text-[8px] font-bold text-slate-500">⏳ ตรวจรูป...</span>
                </div>`
             : `<div class="flex flex-col items-center gap-1 text-slate-300"><span class="text-2xl">🖼️</span><span class="text-[8px]">ไม่มีรูป</span></div>`;
