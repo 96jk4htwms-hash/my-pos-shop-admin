@@ -2197,12 +2197,14 @@
 
     // ---------- EXTERNAL DOCUMENTS (photos/files uploaded manually) ----------
     window.uploadGenericFileToSupabase = async function (file, folder) {
+      await ensureSupabaseAnonymousAuth();
       const compressed = await window.compressImageFile(file);
       const ext = compressed.name.split('.').pop();
       const path = `${folder}/${Date.now()}-${Math.random().toString(36).slice(2, 8)}.${ext}`;
-      const { error: uploadError } = await getSupabaseClient().storage
-        .from('documents')
-        .upload(path, compressed, { upsert: true });
+      const { error: uploadError } = await withTimeout(
+        getSupabaseClient().storage.from('documents').upload(path, compressed, { upsert: true }),
+        25000, 'อัปโหลดไฟล์ใช้เวลานานเกินไป (เกิน 25 วินาที) กรุณาตรวจสอบอินเทอร์เน็ตแล้วลองใหม่'
+      );
       if (uploadError) throw uploadError;
       const { data } = getSupabaseClient().storage.from('documents').getPublicUrl(path);
       return data.publicUrl;
@@ -5435,14 +5437,6 @@
         const parentId = document.getElementById('cat-parent-id').value || null;
         if(!name) return showAlert("ข้อมูลไม่ครบ", "กรุณาระบุชื่อหมวดหมู่", true);
         if (parentId === id) return showAlert("ตั้งค่าไม่ถูกต้อง", "หมวดหมู่ไม่สามารถเป็นหมวดหมู่ย่อยของตัวเองได้", true);
-        if (parentId) {
-          let cursor = parentId, guard = 0;
-          while (cursor && guard++ < 100) {
-            if (cursor === id) return showAlert("ตั้งค่าไม่ถูกต้อง", "ไม่สามารถย้ายหมวดหมู่นี้ไปอยู่ใต้หมวดหมู่ลูกหลานของตัวเองได้", true);
-            const parent = db.categories.find(c => c.id === cursor);
-            cursor = parent?.parentId || null;
-          }
-        }
 
         const oldCat = db.categories.find(x => x.id === id);
         const oldName = oldCat ? oldCat.name : null;
@@ -7099,10 +7093,7 @@
         document.getElementById('import-hint').classList.add('hidden');
         document.getElementById('import-mapping-sec').classList.add('hidden');
         document.getElementById('btn-confirm-import').classList.add('hidden');
-        uploadedHeaders = []; uploadedRows = [];
-        // V7.02.2: do not destroy a recoverable import batch when opening the modal.
-        // A new file/mapping will explicitly replace the current draft after confirmation.
-        if (!window.SmartPOSImportRecovery?.hasDraft?.()) pendingImportData = [];
+        pendingImportData = []; uploadedHeaders = []; uploadedRows = [];
         document.getElementById('modal-command').classList.remove('hidden');
         document.getElementById('modal-command').classList.add('flex');
       };
@@ -7637,11 +7628,6 @@
                   // อัปเดตกลุ่มสินค้าเฉพาะเมื่อไฟล์ระบุค่ามาจริงๆ (ไม่เขียนทับด้วยค่าว่างถ้าช่องนี้ไม่ได้กรอก
                   // ในไฟล์ที่นำเข้า เพื่อไม่ให้การนำเข้าซ้ำไปลบการจัดกลุ่มที่ตั้งไว้ในระบบโดยไม่ตั้งใจ)
                   if (item.groupName) existingProduct.groupName = item.groupName;
-                  if (!Array.isArray(existingProduct.categoryIds)) existingProduct.categoryIds = [];
-                  resolvedCategoryNames.forEach(catName => {
-                    const catObj = db.categories.find(c => c.name.toLowerCase() === catName.toLowerCase());
-                    if (catObj && !existingProduct.categoryIds.includes(catObj.id)) existingProduct.categoryIds.push(catObj.id);
-                  });
                   if (item.code) existingProduct.code = item.code;
                   if (item.imageUrl) if (item.imageUrl) existingProduct.imageUrl = item.imageUrl;
                   const existingV = existingProduct.variants.find(v => v.sizeName === item.sizeName || (barcode && v.barcode === barcode));
@@ -7660,9 +7646,7 @@
                   }
                 } else {
                   db.products[item.id] = {
-                    id: item.id, name: item.name, code: item.code || '', cat: resolvedCategoryNames,
-                    categoryIds: resolvedCategoryNames.map(catName => { const c = db.categories.find(x => x.name.toLowerCase() === catName.toLowerCase()); return c ? c.id : null; }).filter(Boolean),
-                    groupName: item.groupName || '', image: "📦", imageUrl: item.imageUrl || '', isDeleted: false, variants: [
+                    id: item.id, name: item.name, code: item.code || '', cat: resolvedCategoryNames, groupName: item.groupName || '', image: "📦", imageUrl: item.imageUrl || '', isDeleted: false, variants: [
                       { id: 'V-' + generateID(), sizeName: item.sizeName, barcode: barcode, cost: item.cost, price: item.price, stock: roundStock(item.stock), minStock: item.minStock, fractions: [] }
                     ]
                   };
@@ -9165,9 +9149,49 @@ function getSupabaseClient() {
     throw new Error("Supabase library not loaded");
   }
   _supabaseClient = window.supabase.createClient(getConfiguredSupabaseUrl(), getConfiguredSupabaseAnonKey());
+  ensureSupabaseAnonymousAuth().catch(() => {}); // warm up the session in the background
   return _supabaseClient;
 }
 window.getSupabaseClient = getSupabaseClient;
+
+// The app has no login screen — it only ever uses the anon key. But several RLS
+// policies (storage.objects for product-images/documents, import_batches,
+// import_items, audit_log, error_logs) require the `authenticated` role with a
+// real auth.uid(). Supabase's built-in anonymous sign-in gives us that — a stable
+// per-device user id — without needing any login UI. This must run before any
+// write that depends on those policies, or it will be rejected by RLS every time.
+let _supaAuthReady = null;
+function ensureSupabaseAnonymousAuth() {
+  if (_supaAuthReady) return _supaAuthReady;
+  _supaAuthReady = (async () => {
+    const client = getSupabaseClient();
+    if (!client?.auth?.getSession) return null;
+    const { data: sessionData } = await client.auth.getSession();
+    if (sessionData?.session) return sessionData.session;
+    if (typeof client.auth.signInAnonymously !== 'function') return null;
+    const { data, error } = await client.auth.signInAnonymously();
+    if (error) {
+      console.warn('[Supabase] Anonymous sign-in failed — uploads/import audit will be rejected by RLS until this is fixed. ' +
+        'Check Authentication → Settings → "Allow anonymous sign-ins" is enabled on this Supabase project. Error:', error.message);
+      return null;
+    }
+    return data?.session || null;
+  })();
+  return _supaAuthReady;
+}
+window.ensureSupabaseAnonymousAuth = ensureSupabaseAnonymousAuth;
+
+// Wraps a Supabase promise with a client-side timeout so a stalled network call
+// (paused free-tier project, dead wifi, etc.) fails with a clear message instead
+// of leaving the UI stuck on "กำลังอัปโหลด..." forever.
+function withTimeout(promise, ms, message) {
+  let timer;
+  const timeout = new Promise((_, reject) => {
+    timer = setTimeout(() => reject(new Error(message)), ms);
+  });
+  return Promise.race([Promise.resolve(promise).finally(() => clearTimeout(timer)), timeout]);
+}
+window.withTimeout = withTimeout;
 
 // ------------------------------------------
 // DECOUPLED SYNC & GRANULAR RELATIONAL TABLE SUPPORT
@@ -9400,13 +9424,15 @@ window.compressImageFile = function (file, maxDim = 1600, quality = 0.82) {
 window.uploadProductImageToSupabase = async function (file, productId) {
   if (!file) return null;
   try {
+    await ensureSupabaseAnonymousAuth();
     const compressed = await window.compressImageFile(file);
     const ext = compressed.name.split('.').pop();
     const path = `${productId}-${Date.now()}.${ext}`;
 
-    const { error: uploadError } = await getSupabaseClient().storage
-      .from('product-images')
-      .upload(path, compressed, { upsert: true });
+    const { error: uploadError } = await withTimeout(
+      getSupabaseClient().storage.from('product-images').upload(path, compressed, { upsert: true }),
+      25000, 'อัปโหลดรูปใช้เวลานานเกินไป (เกิน 25 วินาที) กรุณาตรวจสอบอินเทอร์เน็ตแล้วลองใหม่'
+    );
     if (uploadError) throw uploadError;
 
     const { data } = getSupabaseClient().storage.from('product-images').getPublicUrl(path);
@@ -10051,7 +10077,6 @@ window.logTransaction = async function (action, details = {}, opts = {}) {
       <script src="./js/features/v702-import-safety.js" defer></script>
       <script src="./js/services/v702-supabase-import.js" defer></script>
       <script src="./js/features/v7021-hardening.js" defer></script>
-      <script src="./js/features/v7022-import-recovery.js" defer></script>
       <script src="./js/features/v7022-docs-hub.js" defer></script>
       <script src="./pwa-register.js" defer></script>
   </body>
