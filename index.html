@@ -1571,7 +1571,7 @@
         <div id="import-review-toolbar" class="hidden bg-indigo-50 border border-indigo-200 rounded-2xl p-3 mb-2 text-[10px]">
           <div class="flex flex-col sm:flex-row gap-2 sm:items-center sm:justify-between">
             <div class="font-bold text-indigo-800">
-              🛡️ ระบบตรวจซ้ำ V7.02.1:
+              🛡️ ระบบตรวจซ้ำ V7.01:
               <span id="import-review-summary">กำลังวิเคราะห์...</span>
             </div>
             <div class="flex flex-wrap gap-2">
@@ -2197,14 +2197,12 @@
 
     // ---------- EXTERNAL DOCUMENTS (photos/files uploaded manually) ----------
     window.uploadGenericFileToSupabase = async function (file, folder) {
-      await ensureSupabaseAnonymousAuth();
       const compressed = await window.compressImageFile(file);
       const ext = compressed.name.split('.').pop();
       const path = `${folder}/${Date.now()}-${Math.random().toString(36).slice(2, 8)}.${ext}`;
-      const { error: uploadError } = await withTimeout(
-        getSupabaseClient().storage.from('documents').upload(path, compressed, { upsert: true }),
-        25000, 'อัปโหลดไฟล์ใช้เวลานานเกินไป (เกิน 25 วินาที) กรุณาตรวจสอบอินเทอร์เน็ตแล้วลองใหม่'
-      );
+      const { error: uploadError } = await getSupabaseClient().storage
+        .from('documents')
+        .upload(path, compressed, { upsert: true });
       if (uploadError) throw uploadError;
       const { data } = getSupabaseClient().storage.from('documents').getPublicUrl(path);
       return data.publicUrl;
@@ -2602,9 +2600,7 @@
       let tempPin = "";
       let stockSortBy = 'id'; 
       let selectedBillForReceipt = null;
-      var pendingImportData = []; // NOTE: must stay `var` (not `let`) so window.pendingImportData
-      // resolves to this same array — the V7.02/V7.02.1 bridge scripts (js/features/*.js) only
-      // ever read/write it via `window.pendingImportData`.
+      let pendingImportData = []; 
       let uploadedHeaders = []; 
       let uploadedRows = [];
       let isSyncing = false; 
@@ -7070,13 +7066,7 @@
             }
 
             const firstSheet = workbook.Sheets[workbook.SheetNames[0]];
-            // raw:false — return each cell's displayed/formatted text (what a person
-            // sees in Excel), not the underlying numeric value. Without this, a
-            // barcode/SKU column stored as a zero-padded Number (very common in retail
-            // export templates, e.g. format "0000000000000") loses its leading zero
-            // the moment it's read as a number and later .toString()'d, silently
-            // corrupting the barcode and breaking matching against existing products.
-            const json = XLSX.utils.sheet_to_json(firstSheet, { header: 1, raw: false, defval: '' });
+            const json = XLSX.utils.sheet_to_json(firstSheet, { header: 1 });
 
             if (json.length < 2) return showAlert("ไฟล์ไม่มีข้อมูล", "ไม่พบข้อมูลสำหรับประมวลผลภายในตารางของไฟล์นี้", true);
             
@@ -7430,7 +7420,7 @@
 
           const img = item.imageUrl
             ? `<div class="flex flex-col items-center gap-1">
-                 <img src="${escapeHTML(item.imageUrl)}" class="import-img-thumb" onload="this.classList.remove('import-img-bad'); if(this.nextElementSibling) this.nextElementSibling.textContent='✅ รูปเปิดได้'" onerror="this.classList.add('import-img-bad'); if(this.nextElementSibling) this.nextElementSibling.textContent='❌ เปิดรูปไม่ได้'" referrerpolicy="no-referrer">
+                 <img src="${escapeHTML(item.imageUrl)}" class="import-img-thumb" onload="this.classList.remove('import-img-bad'); this.nextElementSibling.textContent='✅ รูปเปิดได้'" onerror="this.classList.add('import-img-bad'); this.nextElementSibling.textContent='❌ เปิดรูปไม่ได้'" referrerpolicy="no-referrer">
                  <span class="text-[8px] font-bold text-slate-500">⏳ ตรวจรูป...</span>
                </div>`
             : `<div class="flex flex-col items-center gap-1 text-slate-300"><span class="text-2xl">🖼️</span><span class="text-[8px]">ไม่มีรูป</span></div>`;
@@ -7486,7 +7476,7 @@
 
         document.getElementById('preview-actions-bar').classList.remove('hidden');
         document.getElementById('import-hint').classList.remove('hidden');
-        document.getElementById('btn-confirm-import').classList.toggle('hidden', !rows.some(r => r.isValid && r.action !== 'SKIP'));
+        document.getElementById('btn-confirm-import').classList.toggle('hidden', rows.some(r => r.isValid && r.action !== 'SKIP'));
       }
 
       window.setImportRowAction = function(rowId, action) {
@@ -9155,49 +9145,9 @@ function getSupabaseClient() {
     throw new Error("Supabase library not loaded");
   }
   _supabaseClient = window.supabase.createClient(getConfiguredSupabaseUrl(), getConfiguredSupabaseAnonKey());
-  ensureSupabaseAnonymousAuth().catch(() => {}); // warm up the session in the background
   return _supabaseClient;
 }
 window.getSupabaseClient = getSupabaseClient;
-
-// The app has no login screen — it only ever uses the anon key. But several RLS
-// policies (storage.objects for product-images/documents, import_batches,
-// import_items, audit_log, error_logs) require the `authenticated` role with a
-// real auth.uid(). Supabase's built-in anonymous sign-in gives us that — a stable
-// per-device user id — without needing any login UI. This must run before any
-// write that depends on those policies, or it will be rejected by RLS every time.
-let _supaAuthReady = null;
-function ensureSupabaseAnonymousAuth() {
-  if (_supaAuthReady) return _supaAuthReady;
-  _supaAuthReady = (async () => {
-    const client = getSupabaseClient();
-    if (!client?.auth?.getSession) return null;
-    const { data: sessionData } = await client.auth.getSession();
-    if (sessionData?.session) return sessionData.session;
-    if (typeof client.auth.signInAnonymously !== 'function') return null;
-    const { data, error } = await client.auth.signInAnonymously();
-    if (error) {
-      console.warn('[Supabase] Anonymous sign-in failed — uploads/import audit will be rejected by RLS until this is fixed. ' +
-        'Check Authentication → Settings → "Allow anonymous sign-ins" is enabled on this Supabase project. Error:', error.message);
-      return null;
-    }
-    return data?.session || null;
-  })();
-  return _supaAuthReady;
-}
-window.ensureSupabaseAnonymousAuth = ensureSupabaseAnonymousAuth;
-
-// Wraps a Supabase promise with a client-side timeout so a stalled network call
-// (paused free-tier project, dead wifi, etc.) fails with a clear message instead
-// of leaving the UI stuck on "กำลังอัปโหลด..." forever.
-function withTimeout(promise, ms, message) {
-  let timer;
-  const timeout = new Promise((_, reject) => {
-    timer = setTimeout(() => reject(new Error(message)), ms);
-  });
-  return Promise.race([Promise.resolve(promise).finally(() => clearTimeout(timer)), timeout]);
-}
-window.withTimeout = withTimeout;
 
 // ------------------------------------------
 // DECOUPLED SYNC & GRANULAR RELATIONAL TABLE SUPPORT
@@ -9430,15 +9380,13 @@ window.compressImageFile = function (file, maxDim = 1600, quality = 0.82) {
 window.uploadProductImageToSupabase = async function (file, productId) {
   if (!file) return null;
   try {
-    await ensureSupabaseAnonymousAuth();
     const compressed = await window.compressImageFile(file);
     const ext = compressed.name.split('.').pop();
     const path = `${productId}-${Date.now()}.${ext}`;
 
-    const { error: uploadError } = await withTimeout(
-      getSupabaseClient().storage.from('product-images').upload(path, compressed, { upsert: true }),
-      25000, 'อัปโหลดรูปใช้เวลานานเกินไป (เกิน 25 วินาที) กรุณาตรวจสอบอินเทอร์เน็ตแล้วลองใหม่'
-    );
+    const { error: uploadError } = await getSupabaseClient().storage
+      .from('product-images')
+      .upload(path, compressed, { upsert: true });
     if (uploadError) throw uploadError;
 
     const { data } = getSupabaseClient().storage.from('product-images').getPublicUrl(path);
@@ -10082,8 +10030,6 @@ window.logTransaction = async function (action, details = {}, opts = {}) {
       <script src="./js/features/v702-image-checker.js" defer></script>
       <script src="./js/features/v702-import-safety.js" defer></script>
       <script src="./js/services/v702-supabase-import.js" defer></script>
-      <script src="./js/features/v7021-hardening.js" defer></script>
-      <script src="./js/features/v7022-docs-hub.js" defer></script>
       <script src="./pwa-register.js" defer></script>
   </body>
 </html>
