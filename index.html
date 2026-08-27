@@ -1934,7 +1934,7 @@
 
       el.addEventListener('touchend', (e) => {
         const t = e.changedTouches[0];
-        const dx = t.screenX - startX;
+        const dx = t.screenX - startX;u
         const dy = t.screenY - startY;
         const dt = Date.now() - startTime;
         if (dt > MAX_DURATION) return;
@@ -2176,7 +2176,7 @@
             <p><b>ซัพพลายเออร์:</b> ${escapeHTML(sName)}</p>
             <p><b>กำหนดชำระ:</b> ${escapeHTML(po.dueDate)} (${po.status === 'PAID' ? 'จ่ายแล้ว' : 'ค้างจ่าย'})</p>
           </div>
-          <div class="font-bold border-b pb-1 mb-1 flex text-[10px]">
+       c   <div class="font-bold border-b pb-1 mb-1 flex text-[10px]">
             <span class="flex-1">รายการ</span><span class="w-10 text-center">จำนวน</span><span class="w-16 text-right">รวม</span>
           </div>
           <div class="text-[10px] space-y-1">${itemsHtml}</div>
