@@ -52,3 +52,6 @@ Supabase Import Center เป็น optional persistence และต้อง�
 
 **สิ่งที่ต้องทำในฝั่ง Supabase Dashboard ก่อนใช้งานได้จริง:**
 Authentication → Settings/Providers → เปิด **"Allow anonymous sign-ins"** ให้เป็น ON (โปรเจกต์ใหม่บางอันปิดไว้เป็นค่าเริ่มต้น) ถ้าไม่เปิด ระบบจะยัง error แต่คราวนี้จะขึ้นข้อความชัดเจนใน console แทนที่จะค้างเฉยๆ
+
+### แก้เพิ่ม: "อัปโหลดรูปไม่สำเร็จ — new row violates row-level security policy"
+error นี้เกิดเพราะ toggle "Allow anonymous sign-ins" (ข้างบน) ยังไม่ได้เปิดในโปรเจกต์ Supabase ของร้าน — เพื่อไม่ให้ต้องพึ่ง toggle นี้ (บางโปรเจกต์อาจไม่มีสิทธิ์เปิด หรือเปิดไม่ได้ในบางแพ็กเกจ) จึงปรับ policy ของ Storage (`product-images` และ `documents`) จาก `TO authenticated` เป็น `TO anon, authenticated` — เพราะ policy กลุ่มนี้เช็คแค่ `bucket_id` ไม่ได้ผูกกับ `auth.uid()` จึงเปิดให้ anon role (คือ client ที่ใช้แค่ anon key โดยไม่ได้ login เลย) เขียนได้อย่างปลอดภัย โดยไม่กระทบตารางอื่นที่ผูก `owner_id = auth.uid()` ไว้ (import_batches, audit_log, error_logs — กลุ่มนี้ยังต้องเปิด anonymous sign-in อยู่ดีถ้าอยากให้ทำงาน)
