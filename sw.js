@@ -1,4 +1,4 @@
-const CACHE='smartpos-v7.02.2-auth-fix-2026-08-26';
+const CACHE='smartpos-v7.02.2-xlsximport-2026-08-27';
 const SHELL=['./','./index.html','./manifest.webmanifest','./pwa.css','./pwa-register.js','./js/core/v702-config.js','./js/core/v702-utils.js','./js/features/v702-image-checker.js','./js/features/v702-import-safety.js','./js/services/v702-supabase-import.js','./js/features/v7021-hardening.js','./js/features/v7022-docs-hub.js','./offline.html','./icons/icon-192.png','./icons/icon-512.png','./icons/icon-512-maskable.png','./icons/apple-touch-icon.png'];
 self.addEventListener('install',e=>e.waitUntil(caches.open(CACHE).then(c=>c.addAll(SHELL)).then(()=>self.skipWaiting())));
 self.addEventListener('activate',e=>e.waitUntil(caches.keys().then(keys=>Promise.all(keys.filter(k=>k!==CACHE).map(k=>caches.delete(k)))).then(()=>self.clients.claim())));
